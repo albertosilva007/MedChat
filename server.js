@@ -1,24 +1,27 @@
 const express = require('express');
-const twilio = require('twilio');
-const dotenv = require('dotenv');
-const cors = require('cors');
 const axios = require('axios');
+const dotenv = require('dotenv');
 
 dotenv.config();
 
 const app = express();
-app.use(cors());
 app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-
-console.log('=== SERVIDOR MEDCHAT ===');
-console.log('TELEGRAM_BOT_TOKEN:', process.env.TELEGRAM_BOT_TOKEN ? 'OK' : 'FALTANDO');
-
-const accountSid = process.env.TWILIO_ACCOUNT_SID;
-const authToken = process.env.TWILIO_AUTH_TOKEN;
-const client = twilio(accountSid, authToken);
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+
+// Chat IDs dos médicos
+const doctors = {
+    alberto: {
+        name: 'Alberto Silva',
+        phone: '+5581986509040',
+        chatId: '1648736550'
+    },
+    agatha: {
+        name: 'Agatha Pergentino', 
+        phone: '+5581987740434',
+        chatId: '8037381649'
+    }
+};
 
 // Função para enviar Telegram
 async function sendTelegram(chatId, message) {
@@ -37,34 +40,20 @@ async function sendTelegram(chatId, message) {
     }
 }
 
-// Função para enviar WhatsApp
-async function sendWhatsApp(phone, message) {
-    try {
-        const result = await client.messages.create({
-            from: `whatsapp:${process.env.TWILIO_WHATSAPP_NUMBER}`,
-            to: `whatsapp:${phone}`,
-            body: message
-        });
-        console.log(`✅ WhatsApp enviado para ${phone}:`, result.sid);
-        return result;
-    } catch (error) {
-        console.error(`❌ Erro WhatsApp ${phone}:`, error.message);
-        throw error;
-    }
-}
-
 // Rota principal
 app.get('/', (req, res) => {
     res.json({
-        message: '🏥 MedChat funcionando!',
+        message: '🏥 MedChat - Dual Telegram',
         timestamp: new Date().toISOString(),
-        status: 'OK',
+        doctors: {
+            alberto: `${doctors.alberto.phone} → Telegram`,
+            agatha: `${doctors.agatha.phone} → Telegram`
+        },
         routes: [
-            'GET /test-agatha - Testar Telegram Agatha',
-            'GET /test-quick - Teste rápido',
-            'GET /test-alert - Alerta completo',
-            'GET /test-whatsapp - Testar WhatsApp Dr. Alberto',
-            'POST /send-whatsapp - Sistema original'
+            'GET /test-alberto - Testar Alberto',
+            'GET /test-agatha - Testar Agatha', 
+            'GET /test-both - Testar ambos',
+            'POST /notify-both - Notificar ambos'
         ]
     });
 });
@@ -73,34 +62,75 @@ app.get('/', (req, res) => {
 app.get('/status', (req, res) => {
     res.json({
         telegram: TELEGRAM_BOT_TOKEN ? '✅ OK' : '❌ Faltando',
-        whatsapp: accountSid ? '✅ OK' : '❌ Faltando',
-        agathaChat: '8037381649',
-        pastorChat: '1648736550',
-        defaultTelegram: 'Agatha (funcionando)',
-        defaultWhatsApp: 'Dr. Alberto'
+        doctors: [
+            {
+                name: doctors.alberto.name,
+                phone: doctors.alberto.phone,
+                chatId: doctors.alberto.chatId,
+                status: 'Aguardando teste'
+            },
+            {
+                name: doctors.agatha.name,
+                phone: doctors.agatha.phone, 
+                chatId: doctors.agatha.chatId,
+                status: 'Funcionando'
+            }
+        ]
     });
 });
 
-// TESTE 1: Telegram para Agatha (GET - funciona no navegador)
-app.get('/test-agatha', async (req, res) => {
+// Teste Alberto
+app.get('/test-alberto', async (req, res) => {
     try {
-        const message = `🧪 <b>Teste MedChat para Agatha</b>
+        const message = `🧪 <b>Teste para Alberto</b>
 
+👤 <b>Nome:</b> Alberto Silva  
+📱 <b>WhatsApp:</b> +5581986509040
+💬 <b>Chat ID:</b> ${doctors.alberto.chatId}
 ⏰ <b>Data:</b> ${new Date().toLocaleString('pt-BR')}
-📱 <b>WhatsApp:</b> +5581987740434
-✅ <b>Status:</b> Sistema funcionando perfeitamente!
 
-🏥 <i>Notificação teste enviada com sucesso!</i>`;
+✅ <i>Se recebeu, seu Telegram está funcionando!</i>`;
 
-        const result = await sendTelegram('8037381649', message);
+        const result = await sendTelegram(doctors.alberto.chatId, message);
         
         res.json({
             success: true,
-            message: '📱 **Notificação enviada para Agatha (+5581987740434) via Telegram com sucesso!**',
+            message: '📱 **Mensagem enviada para Alberto (+5581986509040) via Telegram!**',
             telegram: {
                 messageId: result.message_id,
-                chatId: '8037381649',
-                to: 'Agatha Pergentino'
+                chatId: doctors.alberto.chatId
+            }
+        });
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            error: error.message,
+            chatId: doctors.alberto.chatId,
+            suggestion: 'Alberto precisa reativar o bot @lbertoBot'
+        });
+    }
+});
+
+// Teste Agatha
+app.get('/test-agatha', async (req, res) => {
+    try {
+        const message = `🧪 <b>Teste para Agatha</b>
+
+👤 <b>Nome:</b> Agatha Pergentino
+📱 <b>WhatsApp:</b> +5581987740434  
+💬 <b>Chat ID:</b> ${doctors.agatha.chatId}
+⏰ <b>Data:</b> ${new Date().toLocaleString('pt-BR')}
+
+✅ <i>Se recebeu, seu Telegram está funcionando!</i>`;
+
+        const result = await sendTelegram(doctors.agatha.chatId, message);
+        
+        res.json({
+            success: true,
+            message: '📱 **Mensagem enviada para Agatha (+5581987740434) via Telegram!**',
+            telegram: {
+                messageId: result.message_id,
+                chatId: doctors.agatha.chatId
             }
         });
     } catch (error) {
@@ -111,126 +141,69 @@ app.get('/test-agatha', async (req, res) => {
     }
 });
 
-// TESTE 2: Teste rápido (GET)
-app.get('/test-quick', async (req, res) => {
+// Teste ambos
+app.get('/test-both', async (req, res) => {
     try {
-        const telegram = await sendTelegram('8037381649', `🧪 <b>Teste Rápido MedChat</b>
-⏰ <b>Data:</b> ${new Date().toLocaleString('pt-BR')}
-✅ <b>Sistema:</b> Funcionando!`);
-
-        res.json({
-            success: true,
-            message: '📱 **Notificação enviada para Agatha via Telegram com sucesso!**',
-            telegram: telegram.message_id
-        });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// TESTE 3: Alerta completo (GET)
-app.get('/test-alert', async (req, res) => {
-    try {
-        const telegramMessage = `🚨 <b>ALERTA TESTE</b> - Sistema MedChat
-
-🚨 <b>Severidade:</b> Alto
-👤 <b>Paciente:</b> João Silva (Teste)
-📄 <b>CPF:</b> 123.456.789-00
-📞 <b>Contato:</b> +5581999999999
-📊 <b>Score:</b> 95
-⏰ <b>Data:</b> ${new Date().toLocaleString('pt-BR')}
-
-⚠️ <i>Este é um teste do sistema de alertas.</i>`;
-
-        const telegram = await sendTelegram('8037381649', telegramMessage);
-
-        res.json({
-            success: true,
-            message: '🚨 **Alerta teste enviado para Agatha (+5581987740434) via Telegram com sucesso!**',
-            telegram: telegram.message_id
-        });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// TESTE 4: WhatsApp para Dr. Alberto (GET)
-app.get('/test-whatsapp', async (req, res) => {
-    try {
-        const message = `🧪 Teste WhatsApp MedChat
-⏰ Data: ${new Date().toLocaleString('pt-BR')}
-✅ Sistema funcionando!`;
-
-        const whatsapp = await sendWhatsApp('+5581986509040', message);
-
-        res.json({
-            success: true,
-            message: '📱 **WhatsApp enviado para Dr. Alberto (+5581986509040) com sucesso!**',
-            whatsapp: whatsapp.sid
-        });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// TESTE 5: Sistema completo (GET)
-app.get('/test-system', async (req, res) => {
-    try {
-        const results = {};
+        const results = [];
         const confirmations = [];
+        const errors = [];
 
-        // Telegram para Agatha
+        // Alberto
         try {
-            const telegram = await sendTelegram('8037381649', `🧪 <b>Teste Sistema Completo</b>
+            const albertoMsg = `🧪 <b>Teste Sistema Dual</b>
+👤 <b>Para:</b> Alberto Silva
+📱 <b>WhatsApp:</b> +5581986509040
 ⏰ <b>Data:</b> ${new Date().toLocaleString('pt-BR')}
-📱 <b>Para:</b> Agatha (Telegram)
-✅ <b>Status:</b> OK`);
-            results.telegram = telegram.message_id;
-            confirmations.push('📱 **Telegram enviado para Agatha com sucesso!**');
+✅ <b>Sistema:</b> Funcionando!`;
+
+            const albertoResult = await sendTelegram(doctors.alberto.chatId, albertoMsg);
+            results.push({
+                doctor: 'Alberto',
+                messageId: albertoResult.message_id,
+                status: 'Enviado'
+            });
+            confirmations.push('📱 **Telegram enviado para Alberto (+5581986509040) com sucesso!**');
         } catch (error) {
-            results.telegramError = error.message;
+            errors.push(`Alberto: ${error.message}`);
         }
 
-        // WhatsApp para Dr. Alberto
+        // Agatha
         try {
-            const whatsapp = await sendWhatsApp('+5581986509040', `🧪 Teste Sistema Completo
-⏰ Data: ${new Date().toLocaleString('pt-BR')}
-📱 Para: Dr. Alberto (WhatsApp)
-✅ Status: OK`);
-            results.whatsapp = whatsapp.sid;
-            confirmations.push('📱 **WhatsApp enviado para Dr. Alberto com sucesso!**');
+            const agathaMsg = `🧪 <b>Teste Sistema Dual</b>
+👤 <b>Para:</b> Agatha Pergentino
+📱 <b>WhatsApp:</b> +5581987740434
+⏰ <b>Data:</b> ${new Date().toLocaleString('pt-BR')}
+✅ <b>Sistema:</b> Funcionando!`;
+
+            const agathaResult = await sendTelegram(doctors.agatha.chatId, agathaMsg);
+            results.push({
+                doctor: 'Agatha',
+                messageId: agathaResult.message_id,
+                status: 'Enviado'
+            });
+            confirmations.push('📱 **Telegram enviado para Agatha (+5581987740434) com sucesso!**');
         } catch (error) {
-            results.whatsappError = error.message;
+            errors.push(`Agatha: ${error.message}`);
         }
 
         res.json({
             success: true,
-            message: 'Teste do sistema completo executado!',
+            message: 'Teste enviado para ambos os médicos!',
             confirmations: confirmations,
-            results: results
+            results: results,
+            errors: errors.length > 0 ? errors : null
         });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
 
-// POST: Alerta completo para Agatha
-app.post('/notify-agatha', async (req, res) => {
+// Notificar ambos (POST)
+app.post('/notify-both', async (req, res) => {
     try {
         const { severity = 'Alto', patientName = 'João Silva', cpf = '123.456.789-00', phone = '+5581999999999', score = 95 } = req.body;
         
-        const whatsappMessage = `🏥 ALERTA MÉDICO - Agatha Pergentino
-        
-🚨 Severidade: ${severity}
-👤 Paciente: ${patientName}
-📄 CPF: ${cpf}
-📞 Contato: ${phone}
-📊 Score de Risco: ${score}
-⏰ Data/Hora: ${new Date().toLocaleString('pt-BR')}
-
-⚠️ Ação necessária conforme protocolo hospitalar.`;
-
-        const telegramMessage = `🏥 <b>ALERTA MÉDICO</b> - Agatha Pergentino
+        const baseMessage = `🚨 <b>ALERTA MÉDICO</b>
 
 🚨 <b>Severidade:</b> ${severity}
 👤 <b>Paciente:</b> ${patientName}
@@ -241,96 +214,79 @@ app.post('/notify-agatha', async (req, res) => {
 
 ⚠️ <i>Ação necessária conforme protocolo hospitalar.</i>`;
 
-        const results = {};
+        const results = [];
         const confirmations = [];
+        const errors = [];
 
-        // WhatsApp
+        // Alberto
         try {
-            const whatsapp = await sendWhatsApp('+5581987740434', whatsappMessage);
-            results.whatsapp = { sid: whatsapp.sid, status: 'Enviado' };
-            confirmations.push('📱 **Notificação enviada para Agatha (+5581987740434) via WhatsApp com sucesso!**');
+            const albertoMessage = `${baseMessage}
+
+👨‍⚕️ <b>Médico:</b> Alberto Silva
+📱 <b>WhatsApp:</b> +5581986509040`;
+
+            const albertoResult = await sendTelegram(doctors.alberto.chatId, albertoMessage);
+            results.push({
+                doctor: 'Alberto Silva',
+                phone: '+5581986509040',
+                messageId: albertoResult.message_id,
+                status: 'Enviado'
+            });
+            confirmations.push('📱 **Notificação enviada para Alberto (+5581986509040) via Telegram com sucesso!**');
         } catch (error) {
-            results.whatsapp = { error: error.message };
+            errors.push(`Alberto: ${error.message}`);
         }
 
-        // Telegram
+        // Agatha
         try {
-            const telegram = await sendTelegram('8037381649', telegramMessage);
-            results.telegram = { messageId: telegram.message_id, status: 'Enviado' };
+            const agathaMessage = `${baseMessage}
+
+👩‍⚕️ <b>Médica:</b> Agatha Pergentino
+📱 <b>WhatsApp:</b> +5581987740434`;
+
+            const agathaResult = await sendTelegram(doctors.agatha.chatId, agathaMessage);
+            results.push({
+                doctor: 'Agatha Pergentino',
+                phone: '+5581987740434',
+                messageId: agathaResult.message_id,
+                status: 'Enviado'
+            });
             confirmations.push('📱 **Notificação enviada para Agatha (+5581987740434) via Telegram com sucesso!**');
         } catch (error) {
-            results.telegram = { error: error.message };
+            errors.push(`Agatha: ${error.message}`);
         }
 
         res.json({
             success: true,
-            message: 'Alertas enviados para Agatha!',
+            message: `Alerta "${severity}" enviado para ambos os médicos!`,
+            patient: {
+                name: patientName,
+                cpf: cpf,
+                phone: phone,
+                score: score
+            },
             confirmations: confirmations,
-            results: results
-        });
-    } catch (error) {
-        res.status(500).json({
-            success: false,
-            error: error.message
-        });
-    }
-});
-
-// POST: Rota original (sistema híbrido)
-app.post('/send-whatsapp', async (req, res) => {
-    try {
-        const { severity, patientName, cpf, phone, score } = req.body;
-        
-        const whatsappMessage = `🚨 Alerta: ${severity}
-👤 Paciente: ${patientName || 'Não informado'}
-📄 CPF: ${cpf || 'Não informado'}
-📞 Contato: ${phone || 'Não informado'}
-📊 Score: ${score}
-⏰ Data: ${new Date().toLocaleString('pt-BR')}`;
-
-        const telegramMessage = `🚨 <b>Alerta:</b> ${severity}
-👤 <b>Paciente:</b> ${patientName || 'Não informado'}
-📄 <b>CPF:</b> ${cpf || 'Não informado'}
-📞 <b>Contato:</b> ${phone || 'Não informado'}
-📊 <b>Score:</b> ${score}
-⏰ <b>Data:</b> ${new Date().toLocaleString('pt-BR')}`;
-
-        const results = {};
-        const confirmations = [];
-
-        // WhatsApp para Dr. Alberto
-        try {
-            const whatsapp = await sendWhatsApp('+5581986509040', whatsappMessage);
-            results.whatsapp = { sid: whatsapp.sid, status: 'Enviado para Dr. Alberto' };
-            confirmations.push('📱 **WhatsApp enviado para Dr. Alberto (+5581986509040) com sucesso!**');
-        } catch (error) {
-            results.whatsapp = { error: error.message };
-        }
-
-        // Telegram para Agatha
-        try {
-            const telegram = await sendTelegram('8037381649', telegramMessage);
-            results.telegram = { messageId: telegram.message_id, status: 'Enviado para Agatha' };
-            confirmations.push('📱 **Telegram enviado para Agatha (+5581987740434) com sucesso!**');
-        } catch (error) {
-            results.telegram = { error: error.message };
-        }
-
-        res.json({
-            success: true,
-            message: 'Sistema híbrido: WhatsApp Dr.Alberto + Telegram Agatha',
-            confirmations: confirmations,
-            results: results
+            results: results,
+            errors: errors.length > 0 ? errors : null
         });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
 
+// Rota original compatível
+app.post('/send-whatsapp', async (req, res) => {
+    // Redirecionar para notify-both
+    return app._router.handle({
+        ...req,
+        url: '/notify-both',
+        method: 'POST'
+    }, res);
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`🚀 Servidor funcionando na porta ${PORT}`);
-    console.log('📱 Telegram: Agatha (8037381649)');
-    console.log('📱 WhatsApp: Dr. Alberto (+5581986509040)');
-    console.log('✅ Rotas GET disponíveis para teste no navegador');
+    console.log(`🚀 Servidor Dual Telegram na porta ${PORT}`);
+    console.log('📱 Alberto: +5581986509040 → Telegram');
+    console.log('📱 Agatha: +5581987740434 → Telegram');
 });
