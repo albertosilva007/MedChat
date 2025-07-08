@@ -1,5 +1,5 @@
 const express = require('express');
-const axios = require('axios');
+const https = require('https');
 const dotenv = require('dotenv');
 
 dotenv.config();
@@ -7,33 +7,32 @@ dotenv.config();
 const app = express();
 app.use(express.json());
 
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '7795497137:AAEYmY3QkpIqFRHBQ66843-x3oGBoIiT6hQ';
 
-// Chat IDs dos médicos
-const doctors = {
-    alberto: {
-        name: 'Alberto Silva',
-        phone: '+5581986509040',
-        chatId: '1648736550'
-    },
-    agatha: {
-        name: 'Agatha Pergentino', 
-        phone: '+5581987740434',
-        chatId: '8037381649'
-    }
-};
-
-// Função para enviar Telegram
+// Função para enviar Telegram usando fetch nativo
 async function sendTelegram(chatId, message) {
     try {
         const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
-        const response = await axios.post(url, {
-            chat_id: chatId,
-            text: message,
-            parse_mode: 'HTML'
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                chat_id: chatId,
+                text: message,
+                parse_mode: 'HTML'
+            })
         });
-        console.log(`✅ Telegram enviado para ${chatId}:`, response.data.message_id);
-        return response.data;
+
+        const data = await response.json();
+        
+        if (data.ok) {
+            console.log(`✅ Telegram enviado para ${chatId}:`, data.result.message_id);
+            return data.result;
+        } else {
+            throw new Error(data.description || 'Erro no Telegram');
+        }
     } catch (error) {
         console.error(`❌ Erro Telegram ${chatId}:`, error.message);
         throw error;
@@ -43,70 +42,40 @@ async function sendTelegram(chatId, message) {
 // Rota principal
 app.get('/', (req, res) => {
     res.json({
-        message: '🏥 MedChat - Dual Telegram',
+        message: '🏥 MedChat - Dual Telegram (Fetch)',
         timestamp: new Date().toISOString(),
         doctors: {
-            alberto: `${doctors.alberto.phone} → Telegram`,
-            agatha: `${doctors.agatha.phone} → Telegram`
-        },
-        routes: [
-            'GET /test-alberto - Testar Alberto',
-            'GET /test-agatha - Testar Agatha', 
-            'GET /test-both - Testar ambos',
-            'POST /notify-both - Notificar ambos'
-        ]
-    });
-});
-
-// Status
-app.get('/status', (req, res) => {
-    res.json({
-        telegram: TELEGRAM_BOT_TOKEN ? '✅ OK' : '❌ Faltando',
-        doctors: [
-            {
-                name: doctors.alberto.name,
-                phone: doctors.alberto.phone,
-                chatId: doctors.alberto.chatId,
-                status: 'Aguardando teste'
-            },
-            {
-                name: doctors.agatha.name,
-                phone: doctors.agatha.phone, 
-                chatId: doctors.agatha.chatId,
-                status: 'Funcionando'
-            }
-        ]
+            alberto: '+5581986509040 → Telegram',
+            agatha: '+5581987740434 → Telegram'
+        }
     });
 });
 
 // Teste Alberto
 app.get('/test-alberto', async (req, res) => {
     try {
-        const message = `🧪 <b>Teste para Alberto</b>
+        const message = `🧪 <b>Teste Alberto (Fetch)</b>
 
 👤 <b>Nome:</b> Alberto Silva  
 📱 <b>WhatsApp:</b> +5581986509040
-💬 <b>Chat ID:</b> ${doctors.alberto.chatId}
 ⏰ <b>Data:</b> ${new Date().toLocaleString('pt-BR')}
 
-✅ <i>Se recebeu, seu Telegram está funcionando!</i>`;
+✅ <i>Sistema funcionando com fetch!</i>`;
 
-        const result = await sendTelegram(doctors.alberto.chatId, message);
+        const result = await sendTelegram('1648736550', message);
         
         res.json({
             success: true,
             message: '📱 **Mensagem enviada para Alberto (+5581986509040) via Telegram!**',
             telegram: {
                 messageId: result.message_id,
-                chatId: doctors.alberto.chatId
+                chatId: '1648736550'
             }
         });
     } catch (error) {
         res.status(500).json({
             success: false,
-            error: error.message,
-            chatId: doctors.alberto.chatId,
-            suggestion: 'Alberto precisa reativar o bot @lbertoBot'
+            error: error.message
         });
     }
 });
@@ -114,23 +83,22 @@ app.get('/test-alberto', async (req, res) => {
 // Teste Agatha
 app.get('/test-agatha', async (req, res) => {
     try {
-        const message = `🧪 <b>Teste para Agatha</b>
+        const message = `🧪 <b>Teste Agatha (Fetch)</b>
 
 👤 <b>Nome:</b> Agatha Pergentino
 📱 <b>WhatsApp:</b> +5581987740434  
-💬 <b>Chat ID:</b> ${doctors.agatha.chatId}
 ⏰ <b>Data:</b> ${new Date().toLocaleString('pt-BR')}
 
-✅ <i>Se recebeu, seu Telegram está funcionando!</i>`;
+✅ <i>Sistema funcionando com fetch!</i>`;
 
-        const result = await sendTelegram(doctors.agatha.chatId, message);
+        const result = await sendTelegram('8037381649', message);
         
         res.json({
             success: true,
             message: '📱 **Mensagem enviada para Agatha (+5581987740434) via Telegram!**',
             telegram: {
                 messageId: result.message_id,
-                chatId: doctors.agatha.chatId
+                chatId: '8037381649'
             }
         });
     } catch (error) {
@@ -150,18 +118,13 @@ app.get('/test-both', async (req, res) => {
 
         // Alberto
         try {
-            const albertoMsg = `🧪 <b>Teste Sistema Dual</b>
+            const albertoMsg = `🧪 <b>Teste Dual System</b>
 👤 <b>Para:</b> Alberto Silva
 📱 <b>WhatsApp:</b> +5581986509040
-⏰ <b>Data:</b> ${new Date().toLocaleString('pt-BR')}
-✅ <b>Sistema:</b> Funcionando!`;
+⏰ <b>Data:</b> ${new Date().toLocaleString('pt-BR')}`;
 
-            const albertoResult = await sendTelegram(doctors.alberto.chatId, albertoMsg);
-            results.push({
-                doctor: 'Alberto',
-                messageId: albertoResult.message_id,
-                status: 'Enviado'
-            });
+            const albertoResult = await sendTelegram('1648736550', albertoMsg);
+            results.push({ doctor: 'Alberto', messageId: albertoResult.message_id });
             confirmations.push('📱 **Telegram enviado para Alberto (+5581986509040) com sucesso!**');
         } catch (error) {
             errors.push(`Alberto: ${error.message}`);
@@ -169,18 +132,13 @@ app.get('/test-both', async (req, res) => {
 
         // Agatha
         try {
-            const agathaMsg = `🧪 <b>Teste Sistema Dual</b>
+            const agathaMsg = `🧪 <b>Teste Dual System</b>
 👤 <b>Para:</b> Agatha Pergentino
 📱 <b>WhatsApp:</b> +5581987740434
-⏰ <b>Data:</b> ${new Date().toLocaleString('pt-BR')}
-✅ <b>Sistema:</b> Funcionando!`;
+⏰ <b>Data:</b> ${new Date().toLocaleString('pt-BR')}`;
 
-            const agathaResult = await sendTelegram(doctors.agatha.chatId, agathaMsg);
-            results.push({
-                doctor: 'Agatha',
-                messageId: agathaResult.message_id,
-                status: 'Enviado'
-            });
+            const agathaResult = await sendTelegram('8037381649', agathaMsg);
+            results.push({ doctor: 'Agatha', messageId: agathaResult.message_id });
             confirmations.push('📱 **Telegram enviado para Agatha (+5581987740434) com sucesso!**');
         } catch (error) {
             errors.push(`Agatha: ${error.message}`);
@@ -188,7 +146,7 @@ app.get('/test-both', async (req, res) => {
 
         res.json({
             success: true,
-            message: 'Teste enviado para ambos os médicos!',
+            message: 'Sistema Dual funcionando!',
             confirmations: confirmations,
             results: results,
             errors: errors.length > 0 ? errors : null
@@ -198,40 +156,30 @@ app.get('/test-both', async (req, res) => {
     }
 });
 
-// Notificar ambos (POST)
+// Sistema de alertas
 app.post('/notify-both', async (req, res) => {
     try {
         const { severity = 'Alto', patientName = 'João Silva', cpf = '123.456.789-00', phone = '+5581999999999', score = 95 } = req.body;
         
-        const baseMessage = `🚨 <b>ALERTA MÉDICO</b>
-
-🚨 <b>Severidade:</b> ${severity}
-👤 <b>Paciente:</b> ${patientName}
-📄 <b>CPF:</b> ${cpf}
-📞 <b>Contato:</b> ${phone}
-📊 <b>Score de Risco:</b> ${score}
-⏰ <b>Data/Hora:</b> ${new Date().toLocaleString('pt-BR')}
-
-⚠️ <i>Ação necessária conforme protocolo hospitalar.</i>`;
-
         const results = [];
         const confirmations = [];
         const errors = [];
 
         // Alberto
         try {
-            const albertoMessage = `${baseMessage}
+            const albertoMessage = `🚨 <b>ALERTA MÉDICO</b>
 
-👨‍⚕️ <b>Médico:</b> Alberto Silva
-📱 <b>WhatsApp:</b> +5581986509040`;
+🚨 <b>Severidade:</b> ${severity}
+👤 <b>Paciente:</b> ${patientName}
+📄 <b>CPF:</b> ${cpf}
+📞 <b>Contato:</b> ${phone}
+📊 <b>Score:</b> ${score}
+⏰ <b>Data:</b> ${new Date().toLocaleString('pt-BR')}
 
-            const albertoResult = await sendTelegram(doctors.alberto.chatId, albertoMessage);
-            results.push({
-                doctor: 'Alberto Silva',
-                phone: '+5581986509040',
-                messageId: albertoResult.message_id,
-                status: 'Enviado'
-            });
+👨‍⚕️ <b>Para:</b> Alberto Silva (+5581986509040)`;
+
+            const albertoResult = await sendTelegram('1648736550', albertoMessage);
+            results.push({ doctor: 'Alberto Silva', messageId: albertoResult.message_id });
             confirmations.push('📱 **Notificação enviada para Alberto (+5581986509040) via Telegram com sucesso!**');
         } catch (error) {
             errors.push(`Alberto: ${error.message}`);
@@ -239,18 +187,19 @@ app.post('/notify-both', async (req, res) => {
 
         // Agatha
         try {
-            const agathaMessage = `${baseMessage}
+            const agathaMessage = `🚨 <b>ALERTA MÉDICO</b>
 
-👩‍⚕️ <b>Médica:</b> Agatha Pergentino
-📱 <b>WhatsApp:</b> +5581987740434`;
+🚨 <b>Severidade:</b> ${severity}
+👤 <b>Paciente:</b> ${patientName}
+📄 <b>CPF:</b> ${cpf}
+📞 <b>Contato:</b> ${phone}
+📊 <b>Score:</b> ${score}
+⏰ <b>Data:</b> ${new Date().toLocaleString('pt-BR')}
 
-            const agathaResult = await sendTelegram(doctors.agatha.chatId, agathaMessage);
-            results.push({
-                doctor: 'Agatha Pergentino',
-                phone: '+5581987740434',
-                messageId: agathaResult.message_id,
-                status: 'Enviado'
-            });
+👩‍⚕️ <b>Para:</b> Agatha Pergentino (+5581987740434)`;
+
+            const agathaResult = await sendTelegram('8037381649', agathaMessage);
+            results.push({ doctor: 'Agatha Pergentino', messageId: agathaResult.message_id });
             confirmations.push('📱 **Notificação enviada para Agatha (+5581987740434) via Telegram com sucesso!**');
         } catch (error) {
             errors.push(`Agatha: ${error.message}`);
@@ -258,13 +207,7 @@ app.post('/notify-both', async (req, res) => {
 
         res.json({
             success: true,
-            message: `Alerta "${severity}" enviado para ambos os médicos!`,
-            patient: {
-                name: patientName,
-                cpf: cpf,
-                phone: phone,
-                score: score
-            },
+            message: `Alerta "${severity}" processado!`,
             confirmations: confirmations,
             results: results,
             errors: errors.length > 0 ? errors : null
@@ -274,19 +217,7 @@ app.post('/notify-both', async (req, res) => {
     }
 });
 
-// Rota original compatível
-app.post('/send-whatsapp', async (req, res) => {
-    // Redirecionar para notify-both
-    return app._router.handle({
-        ...req,
-        url: '/notify-both',
-        method: 'POST'
-    }, res);
-});
-
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`🚀 Servidor Dual Telegram na porta ${PORT}`);
-    console.log('📱 Alberto: +5581986509040 → Telegram');
-    console.log('📱 Agatha: +5581987740434 → Telegram');
+    console.log(`🚀 Servidor Dual Telegram (Fetch) na porta ${PORT}`);
 });
