@@ -98,34 +98,138 @@ async function sendTelegramMessage(message) {
     return response.data;
 }
 
-// ================== CALLMEBOT WHATSAPP ==================
+// ================== CALLMEBOT WHATSAPP MELHORADO ==================
 
-// Configuração CallMeBot
+// Configuração CallMeBot com validações e retry
 const CALLMEBOT_CONFIG = {
     phone: process.env.CALLMEBOT_PHONE,
     apiKey: process.env.CALLMEBOT_APIKEY,
-    baseUrl: 'https://api.callmebot.com/whatsapp.php'
+    baseUrl: 'https://api.callmebot.com/whatsapp.php',
+    timeout: 15000,
+    maxRetries: 3
 };
 
-// Função para enviar WhatsApp via CallMeBot
-async function sendCallMeBotWhatsApp(message) {
+// Função para validar número de telefone brasileiro
+function validatePhoneNumber(phone) {
+    if (!phone) return false;
+    // Remove espaços, parênteses e traços
+    const cleanPhone = phone.replace(/[\s\(\)\-]/g, '');
+    // Verifica se tem formato brasileiro com código do país
+    return /^55\d{10,11}$/.test(cleanPhone);
+}
+
+// Função melhorada para enviar WhatsApp via CallMeBot
+async function sendCallMeBotWhatsApp(message, retryCount = 0) {
     try {
         if (!CALLMEBOT_CONFIG.phone || !CALLMEBOT_CONFIG.apiKey) {
             throw new Error('CallMeBot não configurado - defina CALLMEBOT_PHONE e CALLMEBOT_APIKEY');
         }
 
+        // Validar número de telefone
+        if (!validatePhoneNumber(CALLMEBOT_CONFIG.phone)) {
+            throw new Error('Número de telefone inválido. Use formato: 5581999999999');
+        }
+
+        // Limitar tamanho da mensagem (CallMeBot tem limite)
+        if (message.length > 1000) {
+            console.warn('⚠️ Mensagem muito longa, truncando...');
+            message = message.substring(0, 997) + '...';
+        }
+
         const url = `${CALLMEBOT_CONFIG.baseUrl}?phone=${encodeURIComponent(CALLMEBOT_CONFIG.phone)}&text=${encodeURIComponent(message)}&apikey=${CALLMEBOT_CONFIG.apiKey}`;
         
-        console.log('📱 Enviando CallMeBot WhatsApp...');
-        const response = await axios.get(url, { timeout: 10000 });
+        console.log(`📱 Tentativa ${retryCount + 1} - Enviando CallMeBot WhatsApp...`);
         
-        console.log('✅ CallMeBot WhatsApp enviado!');
-        return { success: true, response: response.data };
+        const response = await axios.get(url, { 
+            timeout: CALLMEBOT_CONFIG.timeout,
+            headers: {
+                'User-Agent': 'MedChat-Server/2.1.0'
+            }
+        });
+        
+        // Verificar se a resposta indica sucesso
+        if (response.status === 200) {
+            console.log('✅ CallMeBot WhatsApp enviado com sucesso!');
+            return { 
+                success: true, 
+                response: response.data,
+                attempt: retryCount + 1,
+                messageLength: message.length
+            };
+        } else {
+            throw new Error(`Status HTTP: ${response.status}`);
+        }
         
     } catch (error) {
-        console.error('❌ Erro CallMeBot:', error.message);
-        return { success: false, error: error.message };
+        console.error(`❌ Erro CallMeBot (tentativa ${retryCount + 1}):`, error.message);
+        
+        // Retry logic para falhas temporárias
+        if (retryCount < CALLMEBOT_CONFIG.maxRetries - 1) {
+            const delay = Math.pow(2, retryCount) * 1000; // Exponential backoff
+            console.log(`🔄 Tentando novamente em ${delay}ms...`);
+            
+            await new Promise(resolve => setTimeout(resolve, delay));
+            return sendCallMeBotWhatsApp(message, retryCount + 1);
+        }
+        
+        return { 
+            success: false, 
+            error: error.message,
+            totalAttempts: retryCount + 1
+        };
     }
+}
+
+// Nova função para enviar alertas com formatação otimizada
+async function sendMedicalAlertCallMeBot(alertData) {
+    const {
+        severity,
+        patientName,
+        cpf,
+        phone,
+        score,
+        symptoms,
+        observations,
+        location,
+        priority
+    } = alertData;
+
+    // Emojis baseados na severidade
+    const severityConfig = {
+        'baixa': { emoji: '🟡', priority: 1 },
+        'media': { emoji: '🟠', priority: 2 },
+        'alta': { emoji: '🔴', priority: 3 },
+        'critica': { emoji: '🆘', priority: 4 },
+        'emergencia': { emoji: '🚨', priority: 5 }
+    };
+
+    const config = severityConfig[severity?.toLowerCase()] || { emoji: '⚠️', priority: 0 };
+    
+    // Formatação otimizada para WhatsApp
+    let alertMessage = `${config.emoji} *ALERTA MÉDICO*\n`;
+    alertMessage += `━━━━━━━━━━━━━━━━━\n`;
+    alertMessage += `🔴 *Severidade:* ${severity?.toUpperCase()}\n`;
+    
+    if (patientName) alertMessage += `👤 *Paciente:* ${patientName}\n`;
+    if (cpf) alertMessage += `📋 *CPF:* ${cpf}\n`;
+    if (phone) alertMessage += `📞 *Contato:* ${phone}\n`;
+    if (score) alertMessage += `📊 *Score:* ${score}\n`;
+    if (location) alertMessage += `📍 *Local:* ${location}\n`;
+    
+    alertMessage += `⏰ *Data/Hora:* ${new Date().toLocaleString('pt-BR')}\n`;
+    
+    if (symptoms) {
+        alertMessage += `\n🩺 *Sintomas:*\n${symptoms}\n`;
+    }
+    
+    if (observations) {
+        alertMessage += `\n📝 *Observações:*\n${observations}\n`;
+    }
+    
+    alertMessage += `\n━━━━━━━━━━━━━━━━━\n`;
+    alertMessage += `_Sistema MedChat v2.1 🏥_`;
+
+    return await sendCallMeBotWhatsApp(alertMessage);
 }
 
 // ================== ROTAS ==================
@@ -148,7 +252,9 @@ app.get('/', (req, res) => {
             testWhatsApp: 'POST /test-whatsapp',
             testCallmebot: 'POST /test-callmebot',
             sendAlertCallmebot: 'POST /send-alert-callmebot',
-            statusCallmebot: 'GET /status-callmebot'
+            sendAlertCallmebotV2: 'POST /send-alert-callmebot-v2',
+            statusCallmebot: 'GET /status-callmebot',
+            setupCallmebot: 'POST /setup-callmebot'
         }
     });
 });
@@ -167,7 +273,8 @@ app.get('/status', (req, res) => {
         callmebot: {
             configured: (CALLMEBOT_CONFIG.phone && CALLMEBOT_CONFIG.apiKey) ? '✅ Configurado' : '❌ Não configurado',
             phone: CALLMEBOT_CONFIG.phone ? '✅ Definido' : '❌ Faltando',
-            apiKey: CALLMEBOT_CONFIG.apiKey ? '✅ Definido' : '❌ Faltando'
+            apiKey: CALLMEBOT_CONFIG.apiKey ? '✅ Definido' : '❌ Faltando',
+            phoneValid: validatePhoneNumber(CALLMEBOT_CONFIG.phone) ? '✅ Válido' : '❌ Inválido'
         }
     });
 });
@@ -215,7 +322,7 @@ app.post('/test-whatsapp', async (req, res) => {
     }
 });
 
-// Rota para testar CallMeBot
+// Rota para testar CallMeBot (versão original)
 app.post('/test-callmebot', async (req, res) => {
     try {
         const testMessage = `🧪 *Teste CallMeBot - Servidor*
@@ -234,12 +341,15 @@ _Teste realizado pelo servidor!_ 🎉`;
                 success: true,
                 message: 'CallMeBot funcionando! Verifique seu WhatsApp!',
                 api: 'CallMeBot',
+                attempts: result.attempt,
+                messageLength: result.messageLength,
                 timestamp: new Date().toISOString()
             });
         } else {
             res.status(500).json({
                 success: false,
                 error: result.error,
+                attempts: result.totalAttempts,
                 tip: 'Verifique se CALLMEBOT_PHONE e CALLMEBOT_APIKEY estão configurados'
             });
         }
@@ -258,20 +368,73 @@ app.get('/status-callmebot', (req, res) => {
         callmebot: {
             configured: (CALLMEBOT_CONFIG.phone && CALLMEBOT_CONFIG.apiKey) ? '✅ Configurado' : '❌ Não configurado',
             phone: CALLMEBOT_CONFIG.phone ? '✅ Definido' : '❌ Faltando CALLMEBOT_PHONE',
+            phoneValid: validatePhoneNumber(CALLMEBOT_CONFIG.phone) ? '✅ Válido' : '❌ Formato inválido',
             apiKey: CALLMEBOT_CONFIG.apiKey ? '✅ Definido' : '❌ Faltando CALLMEBOT_APIKEY',
             api: 'CallMeBot WhatsApp',
             cost: 'Gratuito',
             limitations: 'Apenas para seu próprio número',
+            limits: {
+                dailyMessages: '100 mensagens por dia',
+                messageLength: '1000 caracteres',
+                retries: CALLMEBOT_CONFIG.maxRetries
+            },
             routes: {
                 test: 'POST /test-callmebot',
                 alert: 'POST /send-alert-callmebot',
-                status: 'GET /status-callmebot'
+                alertV2: 'POST /send-alert-callmebot-v2',
+                status: 'GET /status-callmebot',
+                setup: 'POST /setup-callmebot'
             }
         }
     });
 });
 
-// Rota para enviar alerta médico via CallMeBot
+// Rota para configurar CallMeBot (primeira vez)
+app.post('/setup-callmebot', (req, res) => {
+    res.json({
+        message: 'Como configurar CallMeBot WhatsApp',
+        steps: [
+            {
+                step: 1,
+                action: 'Adicionar contato',
+                details: 'Adicione +34 644 77 94 07 no WhatsApp',
+                contact: '+34 644 77 94 07'
+            },
+            {
+                step: 2,
+                action: 'Enviar mensagem',
+                details: 'Envie exatamente esta mensagem:',
+                message: 'I allow callmebot to send me messages'
+            },
+            {
+                step: 3,
+                action: 'Aguardar resposta',
+                details: 'Você receberá uma API key'
+            },
+            {
+                step: 4,
+                action: 'Configurar .env',
+                details: 'Adicione as variáveis:',
+                env: {
+                    'CALLMEBOT_PHONE': 'Seu número com código do país (ex: 5581999999999)',
+                    'CALLMEBOT_APIKEY': 'A API key recebida'
+                }
+            }
+        ],
+        limits: {
+            messages: '100 por dia (gratuito)',
+            length: '1000 caracteres por mensagem',
+            restriction: 'Apenas para seu próprio número'
+        },
+        currentConfig: {
+            phone: CALLMEBOT_CONFIG.phone ? 'Configurado' : 'Não configurado',
+            apiKey: CALLMEBOT_CONFIG.apiKey ? 'Configurado' : 'Não configurado',
+            valid: (CALLMEBOT_CONFIG.phone && CALLMEBOT_CONFIG.apiKey && validatePhoneNumber(CALLMEBOT_CONFIG.phone)) ? '✅ Pronto para usar' : '❌ Configuração incompleta'
+        }
+    });
+});
+
+// Rota para enviar alerta médico via CallMeBot (versão original)
 app.post('/send-alert-callmebot', async (req, res) => {
     try {
         const {
@@ -324,13 +487,15 @@ _Sistema MedChat - CallMeBot API_`;
                 severity: severity,
                 patient: patientName,
                 score: score,
+                attempts: result.attempt,
                 timestamp: new Date().toISOString()
             });
         } else {
             res.status(500).json({
                 success: false,
                 error: 'Falha no envio via CallMeBot',
-                details: result.error
+                details: result.error,
+                attempts: result.totalAttempts
             });
         }
         
@@ -342,10 +507,74 @@ _Sistema MedChat - CallMeBot API_`;
     }
 });
 
-// Rota principal - Enviar alerta
+// Rota melhorada para alertas médicos (versão 2)
+app.post('/send-alert-callmebot-v2', async (req, res) => {
+    try {
+        const alertData = req.body;
+
+        // Validações obrigatórias
+        const required = ['severity', 'score'];
+        const missing = required.filter(field => !alertData[field]);
+        
+        if (missing.length > 0) {
+            return res.status(400).json({
+                success: false,
+                error: `Campos obrigatórios faltando: ${missing.join(', ')}`,
+                required: required
+            });
+        }
+
+        // Validar severidade
+        const validSeverities = ['baixa', 'media', 'alta', 'critica', 'emergencia'];
+        if (!validSeverities.includes(alertData.severity?.toLowerCase())) {
+            return res.status(400).json({
+                success: false,
+                error: 'Severidade inválida',
+                validOptions: validSeverities
+            });
+        }
+
+        console.log('📋 Processando alerta médico via CallMeBot V2...');
+        const result = await sendMedicalAlertCallMeBot(alertData);
+        
+        if (result.success) {
+            res.json({
+                success: true,
+                message: 'Alerta médico enviado via CallMeBot V2!',
+                data: {
+                    api: 'CallMeBot V2',
+                    severity: alertData.severity,
+                    patient: alertData.patientName,
+                    score: alertData.score,
+                    attempts: result.attempt,
+                    messageLength: result.messageLength,
+                    timestamp: new Date().toISOString()
+                }
+            });
+        } else {
+            res.status(500).json({
+                success: false,
+                error: 'Falha no envio via CallMeBot V2',
+                details: {
+                    error: result.error,
+                    totalAttempts: result.totalAttempts
+                }
+            });
+        }
+        
+    } catch (error) {
+        console.error('❌ Erro na rota de alerta V2:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+// Rota principal - Enviar alerta (todos os canais)
 app.post('/send-alert', async (req, res) => {
     console.log('Recebido:', req.body);
-    const { severity, patientName, cpf, phone, score } = req.body;
+    const { severity, patientName, cpf, phone, score, symptoms, observations } = req.body;
 
     // Mensagem formatada para WhatsApp
     const whatsappMessage = `🚨 ALERTA MÉDICO
@@ -371,7 +600,8 @@ app.post('/send-alert', async (req, res) => {
 
     const results = {
         whatsapp: { success: false, error: null },
-        telegram: { success: false, error: null }
+        telegram: { success: false, error: null },
+        callmebot: { success: false, error: null }
     };
 
     // Tentar enviar WhatsApp
@@ -394,8 +624,22 @@ app.post('/send-alert', async (req, res) => {
         console.log('❌ Erro no Telegram:', error.message);
     }
 
+    // Tentar enviar CallMeBot como backup
+    try {
+        const callmebotResult = await sendMedicalAlertCallMeBot(req.body);
+        if (callmebotResult.success) {
+            results.callmebot.success = true;
+            console.log('✅ CallMeBot enviado com sucesso');
+        } else {
+            results.callmebot.error = callmebotResult.error;
+        }
+    } catch (error) {
+        results.callmebot.error = error.message;
+        console.log('❌ Erro no CallMeBot:', error.message);
+    }
+
     // Resposta baseada no sucesso
-    const anySuccess = results.whatsapp.success || results.telegram.success;
+    const anySuccess = results.whatsapp.success || results.telegram.success || results.callmebot.success;
 
     if (anySuccess) {
         res.status(200).json({
@@ -419,6 +663,12 @@ app.post('/send-whatsapp', (req, res) => {
     app.handle(req, res);
 });
 
+// Middleware para log de CallMeBot
+app.use('/callmebot/*', (req, res, next) => {
+    console.log(`📱 CallMeBot ${req.method} ${req.path} - ${new Date().toISOString()}`);
+    next();
+});
+
 // ================== INICIALIZAÇÃO ==================
 
 const PORT = process.env.PORT || 3000;
@@ -428,6 +678,18 @@ app.listen(PORT, async () => {
     console.log(`📱 Acesse: http://localhost:${PORT}`);
     console.log('📱 CallMeBot WhatsApp configurado!');
     console.log('🆓 API Gratuita para WhatsApp!');
+    
+    // Verificar configuração CallMeBot
+    if (CALLMEBOT_CONFIG.phone && CALLMEBOT_CONFIG.apiKey) {
+        console.log('✅ CallMeBot configurado!');
+        if (validatePhoneNumber(CALLMEBOT_CONFIG.phone)) {
+            console.log('✅ Número de telefone válido!');
+        } else {
+            console.log('⚠️ Número de telefone inválido! Use formato: 5581999999999');
+        }
+    } else {
+        console.log('⚠️ CallMeBot não configurado! Configure CALLMEBOT_PHONE e CALLMEBOT_APIKEY');
+    }
 
     // Conectar WhatsApp
     console.log('\n🔄 Conectando ao WhatsApp...');
