@@ -2,9 +2,6 @@ const express = require('express');
 const dotenv = require('dotenv');
 const cors = require('cors');
 const axios = require('axios');
-// Imports para WhatsApp gratuito
-const { default: makeWASocket, DisconnectReason, useMultiFileAuthState } = require('@whiskeysockets/baileys');
-const P = require("pino");
 
 dotenv.config();
 
@@ -20,93 +17,88 @@ app.use('/health', (req, res) => {
     res.status(200).json({ status: 'OK', timestamp: new Date().toISOString() });
 });
 
-console.log('=== CONFIGURAÇÕES RENDER ===');
+console.log('=== CONFIGURAÇÕES MEDCHAT ===');
 console.log('NODE_ENV:', process.env.NODE_ENV || 'development');
 console.log('PORT:', process.env.PORT || 3000);
-console.log('MEU_WHATSAPP:', process.env.MEU_WHATSAPP ? 'Configurado' : 'Não configurado');
+console.log('PUSHBULLET_TOKEN:', process.env.PUSHBULLET_TOKEN ? 'Configurado' : 'Não configurado');
 console.log('TELEGRAM_BOT_TOKEN:', process.env.TELEGRAM_BOT_TOKEN ? 'Configurado' : 'Não configurado');
 console.log('TELEGRAM_CHAT_ID:', process.env.TELEGRAM_CHAT_ID ? 'Configurado' : 'Não configurado');
-console.log('CALLMEBOT_PHONE:', process.env.CALLMEBOT_PHONE ? 'Configurado' : 'Não configurado');
-console.log('CALLMEBOT_APIKEY:', process.env.CALLMEBOT_APIKEY ? 'Configurado' : 'Não configurado');
-console.log('============================');
+console.log('==============================');
 
 // Configurações
-const MEU_WHATSAPP = process.env.MEU_WHATSAPP;
+const NODE_ENV = process.env.NODE_ENV || 'development';
+const PUSHBULLET_TOKEN = process.env.PUSHBULLET_TOKEN;
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
-const NODE_ENV = process.env.NODE_ENV || 'development';
 
-// Variável para socket do WhatsApp
-let sock;
-let whatsappConnected = false;
-let whatsappConnectionAttempts = 0;
-const MAX_WHATSAPP_ATTEMPTS = 3; // Limitar tentativas no Render
+// ================== PUSHBULLET SETUP ==================
 
-// ================== WHATSAPP SETUP (OTIMIZADO PARA RENDER) ==================
+// Configuração Pushbullet
+const PUSHBULLET_CONFIG = {
+    token: PUSHBULLET_TOKEN,
+    baseUrl: 'https://api.pushbullet.com/v2/pushes',
+    timeout: 10000,
+    maxRetries: 3
+};
 
-async function connectToWhatsApp() {
+// Função para enviar Pushbullet
+async function sendPushbulletNotification(title, body, url = null, retryCount = 0) {
     try {
-        // No Render, pode ser melhor desabilitar o WhatsApp Baileys em produção
-        if (NODE_ENV === 'production') {
-            console.log('⚠️ WhatsApp Baileys desabilitado em produção (Render)');
-            console.log('💡 Use CallMeBot como alternativa principal');
-            return;
+        if (!PUSHBULLET_CONFIG.token) {
+            throw new Error('Pushbullet não configurado - defina PUSHBULLET_TOKEN');
         }
 
-        if (whatsappConnectionAttempts >= MAX_WHATSAPP_ATTEMPTS) {
-            console.log('❌ Máximo de tentativas WhatsApp atingido no Render');
-            return;
+        console.log(`📱 Pushbullet - Tentativa ${retryCount + 1}/${PUSHBULLET_CONFIG.maxRetries}`);
+
+        const pushData = {
+            type: 'note',
+            title: title,
+            body: body
+        };
+
+        // Adicionar URL se fornecida
+        if (url) {
+            pushData.type = 'link';
+            pushData.url = url;
         }
 
-        whatsappConnectionAttempts++;
-        console.log(`🔄 Tentativa ${whatsappConnectionAttempts}/${MAX_WHATSAPP_ATTEMPTS} - Conectando WhatsApp...`);
-
-        const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
-
-        sock = makeWASocket({
-            auth: state,
-            printQRInTerminal: NODE_ENV !== 'production', // Não mostrar QR em produção
-            logger: P({ level: "silent" }),
-            connectTimeoutMs: 30000, // Timeout para Render
-            defaultQueryTimeoutMs: 30000
+        const response = await axios.post(PUSHBULLET_CONFIG.baseUrl, pushData, {
+            headers: {
+                'Access-Token': PUSHBULLET_CONFIG.token,
+                'Content-Type': 'application/json'
+            },
+            timeout: PUSHBULLET_CONFIG.timeout
         });
 
-        sock.ev.on('creds.update', saveCreds);
-
-        sock.ev.on('connection.update', (update) => {
-            const { connection, lastDisconnect } = update;
-
-            if (connection === 'close') {
-                whatsappConnected = false;
-                const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
-                console.log('❌ WhatsApp desconectado no Render. Reconnectando...', shouldReconnect);
-
-                if (shouldReconnect && whatsappConnectionAttempts < MAX_WHATSAPP_ATTEMPTS) {
-                    setTimeout(connectToWhatsApp, 10000); // Delay maior no Render
-                }
-            } else if (connection === 'open') {
-                whatsappConnected = true;
-                whatsappConnectionAttempts = 0; // Reset contador
-                console.log('✅ WhatsApp conectado no Render!');
-            }
-        });
+        if (response.status === 200) {
+            console.log('✅ Pushbullet enviado com sucesso!');
+            return {
+                success: true,
+                response: response.data,
+                attempt: retryCount + 1
+            };
+        } else {
+            throw new Error(`Status HTTP: ${response.status}`);
+        }
 
     } catch (error) {
-        console.error('❌ Erro ao conectar WhatsApp no Render:', error.message);
-        whatsappConnected = false;
+        console.error(`❌ Erro Pushbullet (tentativa ${retryCount + 1}):`, error.message);
+
+        // Retry logic
+        if (retryCount < PUSHBULLET_CONFIG.maxRetries - 1) {
+            const delay = Math.pow(2, retryCount) * 1000;
+            console.log(`🔄 Tentando novamente em ${delay}ms...`);
+            
+            await new Promise(resolve => setTimeout(resolve, delay));
+            return sendPushbulletNotification(title, body, url, retryCount + 1);
+        }
+
+        return {
+            success: false,
+            error: error.message,
+            totalAttempts: retryCount + 1
+        };
     }
-}
-
-// Função para enviar WhatsApp para mim mesmo
-async function sendWhatsAppToMe(message) {
-    if (!whatsappConnected || !sock) {
-        throw new Error('WhatsApp não está conectado no Render');
-    }
-
-    const id = MEU_WHATSAPP.includes('@') ? MEU_WHATSAPP : `${MEU_WHATSAPP}@s.whatsapp.net`;
-
-    await sock.sendMessage(id, { text: message });
-    console.log('✅ Mensagem enviada para WhatsApp via Render');
 }
 
 // ================== TELEGRAM SETUP ==================
@@ -123,109 +115,17 @@ async function sendTelegramMessage(message) {
         text: message,
         parse_mode: 'HTML'
     }, {
-        timeout: 10000 // Timeout para Render
+        timeout: 10000
     });
 
-    console.log('✅ Mensagem enviada para Telegram via Render:', response.data.message_id);
+    console.log('✅ Mensagem enviada para Telegram:', response.data.message_id);
     return response.data;
 }
 
-// ================== CALLMEBOT WHATSAPP (OTIMIZADO PARA RENDER) ==================
+// ================== FUNÇÕES DE ALERTA ==================
 
-// Configuração CallMeBot otimizada para Render
-const CALLMEBOT_CONFIG = {
-    phone: process.env.CALLMEBOT_PHONE,
-    apiKey: process.env.CALLMEBOT_APIKEY,
-    baseUrl: 'https://api.callmebot.com/whatsapp.php',
-    timeout: 20000, // Timeout maior para Render
-    maxRetries: 5, // Mais tentativas no Render
-    retryDelay: 2000
-};
-
-// Função para validar número de telefone brasileiro
-function validatePhoneNumber(phone) {
-    if (!phone) return false;
-    const cleanPhone = phone.replace(/[\s\(\)\-]/g, '');
-    return /^55\d{10,11}$/.test(cleanPhone);
-}
-
-// Função melhorada para enviar WhatsApp via CallMeBot (otimizada para Render)
-async function sendCallMeBotWhatsApp(message, retryCount = 0) {
-    try {
-        if (!CALLMEBOT_CONFIG.phone || !CALLMEBOT_CONFIG.apiKey) {
-            throw new Error('CallMeBot não configurado - defina CALLMEBOT_PHONE e CALLMEBOT_APIKEY no Render');
-        }
-
-        // Validar número de telefone
-        if (!validatePhoneNumber(CALLMEBOT_CONFIG.phone)) {
-            throw new Error('Número de telefone inválido no Render. Use formato: 5581999999999');
-        }
-
-        // Limitar tamanho da mensagem (CallMeBot tem limite)
-        if (message.length > 1000) {
-            console.warn('⚠️ Mensagem muito longa no Render, truncando...');
-            message = message.substring(0, 997) + '...';
-        }
-
-        const url = `${CALLMEBOT_CONFIG.baseUrl}?phone=${encodeURIComponent(CALLMEBOT_CONFIG.phone)}&text=${encodeURIComponent(message)}&apikey=${CALLMEBOT_CONFIG.apiKey}`;
-        
-        console.log(`📱 Render - Tentativa ${retryCount + 1}/${CALLMEBOT_CONFIG.maxRetries} - Enviando CallMeBot...`);
-        
-        const response = await axios.get(url, { 
-            timeout: CALLMEBOT_CONFIG.timeout,
-            headers: {
-                'User-Agent': 'MedChat-Render/2.1.0',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-            }
-        });
-        
-        // Verificar se a resposta indica sucesso
-        if (response.status === 200) {
-            console.log('✅ CallMeBot enviado com sucesso via Render!');
-            return { 
-                success: true, 
-                response: response.data,
-                attempt: retryCount + 1,
-                messageLength: message.length,
-                platform: 'Render'
-            };
-        } else {
-            throw new Error(`Status HTTP: ${response.status}`);
-        }
-        
-    } catch (error) {
-        console.error(`❌ Erro CallMeBot no Render (tentativa ${retryCount + 1}):`, error.message);
-        
-        // Retry logic otimizado para Render
-        if (retryCount < CALLMEBOT_CONFIG.maxRetries - 1) {
-            const delay = Math.min(CALLMEBOT_CONFIG.retryDelay * Math.pow(1.5, retryCount), 10000);
-            console.log(`🔄 Render - Tentando novamente em ${delay}ms...`);
-            
-            await new Promise(resolve => setTimeout(resolve, delay));
-            return sendCallMeBotWhatsApp(message, retryCount + 1);
-        }
-        
-        return { 
-            success: false, 
-            error: error.message,
-            totalAttempts: retryCount + 1,
-            platform: 'Render'
-        };
-    }
-}
-
-// Função para keep-alive no Render
-async function keepAlive() {
-    try {
-        const response = await axios.get(`${process.env.RENDER_EXTERNAL_URL || 'http://localhost:' + (process.env.PORT || 3000)}/health`);
-        console.log('💓 Keep-alive Render:', response.status);
-    } catch (error) {
-        console.log('⚠️ Keep-alive falhou:', error.message);
-    }
-}
-
-// Nova função para enviar alertas com formatação otimizada para Render
-async function sendMedicalAlertCallMeBot(alertData) {
+// Função para criar alerta médico formatado
+function createMedicalAlert(alertData) {
     const {
         severity,
         patientName,
@@ -247,143 +147,176 @@ async function sendMedicalAlertCallMeBot(alertData) {
     };
 
     const config = severityConfig[severity?.toLowerCase()] || { emoji: '⚠️', priority: 0 };
-    
-    // Formatação otimizada para WhatsApp via Render
-    let alertMessage = `${config.emoji} *ALERTA MÉDICO*\n`;
-    alertMessage += `━━━━━━━━━━━━━━━━━\n`;
-    alertMessage += `🔴 *Severidade:* ${severity?.toUpperCase()}\n`;
-    
-    if (patientName) alertMessage += `👤 *Paciente:* ${patientName}\n`;
-    if (cpf) alertMessage += `📋 *CPF:* ${cpf}\n`;
-    if (phone) alertMessage += `📞 *Contato:* ${phone}\n`;
-    if (score) alertMessage += `📊 *Score:* ${score}\n`;
-    if (location) alertMessage += `📍 *Local:* ${location}\n`;
-    
-    alertMessage += `⏰ *Data/Hora:* ${new Date().toLocaleString('pt-BR')}\n`;
-    
-    if (symptoms) {
-        alertMessage += `\n🩺 *Sintomas:*\n${symptoms}\n`;
-    }
-    
-    if (observations) {
-        alertMessage += `\n📝 *Observações:*\n${observations}\n`;
-    }
-    
-    alertMessage += `\n━━━━━━━━━━━━━━━━━\n`;
-    alertMessage += `_MedChat Render v2.1 🏥☁️_`;
 
-    return await sendCallMeBotWhatsApp(alertMessage);
+    // Título para Pushbullet
+    const title = `${config.emoji} ALERTA MÉDICO - ${severity?.toUpperCase()}`;
+
+    // Corpo da mensagem
+    let body = `Severidade: ${severity?.toUpperCase()}\n`;
+    if (patientName) body += `Paciente: ${patientName}\n`;
+    if (score) body += `Score: ${score}\n`;
+    if (location) body += `Local: ${location}\n`;
+    if (phone) body += `Contato: ${phone}\n`;
+    if (symptoms) body += `Sintomas: ${symptoms}\n`;
+    body += `Data/Hora: ${new Date().toLocaleString('pt-BR')}`;
+
+    return { title, body, priority: config.priority };
 }
 
-// ================== ROTAS OTIMIZADAS PARA RENDER ==================
+// Função para enviar via Pushbullet formatado
+async function sendMedicalAlertPushbullet(alertData) {
+    const { title, body } = createMedicalAlert(alertData);
+    
+    // URL opcional para dashboard médico
+    const dashboardUrl = process.env.DASHBOARD_URL || null;
+    
+    return await sendPushbulletNotification(title, body, dashboardUrl);
+}
 
-// Rota principal com info do Render
+// ================== ROTAS ==================
+
+// Rota principal
 app.get('/', (req, res) => {
     res.json({
-        message: '🏥 Servidor MedChat funcionando no Render!',
-        version: '2.1.0',
-        platform: 'Render',
+        message: '🏥 Servidor MedChat com Pushbullet!',
+        version: '2.2.0',
+        platform: 'Render + Pushbullet',
         timestamp: new Date().toISOString(),
         environment: NODE_ENV,
         connections: {
-            whatsapp: whatsappConnected ? '✅ Conectado' : '❌ Desconectado (Use CallMeBot)',
-            telegram: TELEGRAM_BOT_TOKEN ? '✅ Configurado' : '❌ Não configurado',
-            callmebot: (CALLMEBOT_CONFIG.phone && CALLMEBOT_CONFIG.apiKey) ? '✅ Configurado (Recomendado)' : '❌ Não configurado'
+            pushbullet: PUSHBULLET_TOKEN ? '✅ Configurado' : '❌ Não configurado',
+            telegram: TELEGRAM_BOT_TOKEN ? '✅ Configurado' : '❌ Não configurado'
         },
-        render: {
-            recommended: 'Use CallMeBot como canal principal',
-            whatsapp_baileys: NODE_ENV === 'production' ? 'Desabilitado em produção' : 'Disponível',
-            keepAlive: 'Ativo'
+        features: {
+            pushbullet: 'Notificações push gratuitas',
+            telegram: 'Mensagens ilimitadas gratuitas',
+            reliable: 'Muito mais confiável que CallMeBot'
         },
         routes: {
             health: 'GET /health',
             status: 'GET /status',
-            sendAlert: 'POST /send-alert',
+            testPushbullet: 'POST /test-pushbullet',
             testTelegram: 'POST /test-telegram',
-            testWhatsApp: 'POST /test-whatsapp',
-            testCallmebot: 'POST /test-callmebot',
-            sendAlertCallmebot: 'POST /send-alert-callmebot',
-            sendAlertCallmebotV2: 'POST /send-alert-callmebot-v2',
-            statusCallmebot: 'GET /status-callmebot',
-            setupCallmebot: 'POST /setup-callmebot'
+            sendAlert: 'POST /send-alert',
+            sendAlertPushbullet: 'POST /send-alert-pushbullet',
+            statusPushbullet: 'GET /status-pushbullet'
         }
     });
 });
 
-// Rota para verificar status no Render
+// Rota para verificar status
 app.get('/status', (req, res) => {
     res.json({
-        platform: 'Render',
+        platform: 'Render + Pushbullet',
         environment: NODE_ENV,
         uptime: process.uptime(),
         memory: process.memoryUsage(),
+        pushbullet: {
+            configured: PUSHBULLET_TOKEN ? '✅ Configurado' : '❌ Não configurado',
+            token: PUSHBULLET_TOKEN ? '✅ Definido' : '❌ Faltando PUSHBULLET_TOKEN',
+            api: 'Pushbullet API v2',
+            cost: 'Gratuito (100 pushes/mês)',
+            reliability: 'Muito alta (99.9%)',
+            maxRetries: PUSHBULLET_CONFIG.maxRetries
+        },
         telegram: {
             botToken: TELEGRAM_BOT_TOKEN ? '✅ Configurado' : '❌ Não configurado',
             chatId: TELEGRAM_CHAT_ID ? '✅ Configurado' : '❌ Não configurado'
-        },
-        whatsapp: {
-            connected: whatsappConnected ? '✅ Conectado' : '❌ Desconectado',
-            myNumber: MEU_WHATSAPP ? '✅ Configurado' : '❌ Não configurado',
-            attempts: whatsappConnectionAttempts,
-            production: NODE_ENV === 'production' ? 'Desabilitado' : 'Ativo'
-        },
-        callmebot: {
-            configured: (CALLMEBOT_CONFIG.phone && CALLMEBOT_CONFIG.apiKey) ? '✅ Configurado' : '❌ Não configurado',
-            phone: CALLMEBOT_CONFIG.phone ? '✅ Definido' : '❌ Faltando',
-            apiKey: CALLMEBOT_CONFIG.apiKey ? '✅ Definido' : '❌ Faltando',
-            phoneValid: validatePhoneNumber(CALLMEBOT_CONFIG.phone) ? '✅ Válido' : '❌ Inválido',
-            maxRetries: CALLMEBOT_CONFIG.maxRetries,
-            timeout: CALLMEBOT_CONFIG.timeout
         }
     });
 });
 
-// Rota para testar CallMeBot no Render
-app.post('/test-callmebot', async (req, res) => {
+// Rota para status Pushbullet
+app.get('/status-pushbullet', (req, res) => {
+    res.json({
+        pushbullet: {
+            configured: PUSHBULLET_TOKEN ? '✅ Configurado' : '❌ Não configurado',
+            token: PUSHBULLET_TOKEN ? '✅ Definido' : '❌ Faltando PUSHBULLET_TOKEN',
+            api: 'Pushbullet API v2',
+            platform: 'Render + Pushbullet',
+            cost: 'Gratuito',
+            limitations: '100 pushes por mês (mais que suficiente)',
+            advantages: [
+                'Muito mais confiável que CallMeBot',
+                'Funciona em todos dispositivos',
+                'Notificações ricas com links',
+                'Sem verificação de número',
+                'API simples e estável'
+            ],
+            limits: {
+                monthlyPushes: '100 (gratuito)',
+                retries: PUSHBULLET_CONFIG.maxRetries,
+                timeout: PUSHBULLET_CONFIG.timeout
+            }
+        }
+    });
+});
+
+// Rota para testar Pushbullet
+app.post('/test-pushbullet', async (req, res) => {
     try {
-        const testMessage = `🧪 *Teste CallMeBot - Render*
+        const title = '🧪 Teste MedChat - Pushbullet';
+        const body = `Data/Hora: ${new Date().toLocaleString('pt-BR')}
+Sistema: MedChat v2.2
+Plataforma: Render + Pushbullet
+Status: Funcionando perfeitamente!
 
-⏰ *Data/Hora:* ${new Date().toLocaleString('pt-BR')}
-🤖 *Sistema:* MedChat v2.1
-☁️ *Plataforma:* Render
-🆓 *API:* CallMeBot (Gratuita)
-✅ *Status:* Funcionando perfeitamente!
+Este é um teste do sistema de notificações médicas.`;
 
-_Teste realizado no Render!_ 🎉`;
-
-        const result = await sendCallMeBotWhatsApp(testMessage);
+        const result = await sendPushbulletNotification(title, body);
         
         if (result.success) {
             res.json({
                 success: true,
-                message: 'CallMeBot funcionando no Render! Verifique seu WhatsApp!',
-                api: 'CallMeBot',
+                message: 'Pushbullet funcionando! Verifique suas notificações!',
+                api: 'Pushbullet',
                 platform: 'Render',
                 attempts: result.attempt,
-                messageLength: result.messageLength,
-                timestamp: new Date().toISOString()
+                timestamp: new Date().toISOString(),
+                tip: 'Verifique seu celular/desktop para a notificação push'
             });
         } else {
             res.status(500).json({
                 success: false,
                 error: result.error,
-                platform: 'Render',
                 attempts: result.totalAttempts,
-                tip: 'Verifique as variáveis de ambiente no Render Dashboard'
+                tip: 'Verifique se PUSHBULLET_TOKEN está correto no Render'
             });
         }
         
     } catch (error) {
         res.status(500).json({
             success: false,
-            error: error.message,
-            platform: 'Render'
+            error: error.message
         });
     }
 });
 
-// Rota melhorada para alertas médicos no Render
-app.post('/send-alert-callmebot-v2', async (req, res) => {
+// Rota para testar Telegram
+app.post('/test-telegram', async (req, res) => {
+    const testMessage = `🧪 <b>Teste MedChat - Telegram</b>
+⏰ <b>Data:</b> ${new Date().toLocaleString('pt-BR')}
+🏥 <b>Sistema:</b> MedChat v2.2
+📱 <b>Plataforma:</b> Render + Pushbullet
+✅ <b>Status:</b> Sistema funcionando!`;
+
+    try {
+        const result = await sendTelegramMessage(testMessage);
+        res.status(200).json({
+            success: true,
+            message: 'Telegram funcionando!',
+            telegram: result
+        });
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+// Rota para enviar alerta via Pushbullet
+app.post('/send-alert-pushbullet', async (req, res) => {
     try {
         const alertData = req.body;
 
@@ -395,8 +328,7 @@ app.post('/send-alert-callmebot-v2', async (req, res) => {
             return res.status(400).json({
                 success: false,
                 error: `Campos obrigatórios faltando: ${missing.join(', ')}`,
-                required: required,
-                platform: 'Render'
+                required: required
             });
         }
 
@@ -406,34 +338,31 @@ app.post('/send-alert-callmebot-v2', async (req, res) => {
             return res.status(400).json({
                 success: false,
                 error: 'Severidade inválida',
-                validOptions: validSeverities,
-                platform: 'Render'
+                validOptions: validSeverities
             });
         }
 
-        console.log('📋 Render - Processando alerta médico via CallMeBot V2...');
-        const result = await sendMedicalAlertCallMeBot(alertData);
+        console.log('📋 Processando alerta médico via Pushbullet...');
+        const result = await sendMedicalAlertPushbullet(alertData);
         
         if (result.success) {
             res.json({
                 success: true,
-                message: 'Alerta médico enviado via CallMeBot no Render!',
+                message: 'Alerta médico enviado via Pushbullet!',
                 data: {
-                    api: 'CallMeBot V2',
+                    api: 'Pushbullet',
                     platform: 'Render',
                     severity: alertData.severity,
                     patient: alertData.patientName,
                     score: alertData.score,
                     attempts: result.attempt,
-                    messageLength: result.messageLength,
                     timestamp: new Date().toISOString()
                 }
             });
         } else {
             res.status(500).json({
                 success: false,
-                error: 'Falha no envio via CallMeBot no Render',
-                platform: 'Render',
+                error: 'Falha no envio via Pushbullet',
                 details: {
                     error: result.error,
                     totalAttempts: result.totalAttempts
@@ -442,360 +371,140 @@ app.post('/send-alert-callmebot-v2', async (req, res) => {
         }
         
     } catch (error) {
-        console.error('❌ Erro na rota de alerta V2 no Render:', error);
+        console.error('❌ Erro na rota de alerta Pushbullet:', error);
         res.status(500).json({
             success: false,
-            error: error.message,
-            platform: 'Render'
-        });
-    }
-});
-
-// Rota para testar Telegram no Render
-app.post('/test-telegram', async (req, res) => {
-    const testMessage = `🧪 <b>Teste do Telegram - Render</b>
-⏰ <b>Data:</b> ${new Date().toLocaleString('pt-BR')}
-☁️ <b>Plataforma:</b> Render
-✅ <b>Status:</b> Sistema funcionando!`;
-
-    try {
-        const result = await sendTelegramMessage(testMessage);
-        res.status(200).json({
-            success: true,
-            message: 'Telegram funcionando no Render!',
-            platform: 'Render',
-            telegram: result
-        });
-    } catch (error) {
-        res.status(500).json({
-            success: false,
-            error: error.message,
-            platform: 'Render'
-        });
-    }
-});
-
-// Rota para testar WhatsApp no Render
-app.post('/test-whatsapp', async (req, res) => {
-    if (NODE_ENV === 'production') {
-        return res.status(503).json({
-            success: false,
-            error: 'WhatsApp Baileys desabilitado em produção no Render',
-            platform: 'Render',
-            alternative: 'Use CallMeBot como alternativa',
-            recommendation: 'POST /test-callmebot'
-        });
-    }
-
-    const testMessage = `🧪 Teste do WhatsApp - Render
-⏰ Data: ${new Date().toLocaleString('pt-BR')}
-☁️ Plataforma: Render
-✅ Status: Sistema funcionando!`;
-
-    try {
-        await sendWhatsAppToMe(testMessage);
-        res.status(200).json({
-            success: true,
-            message: 'WhatsApp funcionando no Render!',
-            platform: 'Render',
-            connected: whatsappConnected
-        });
-    } catch (error) {
-        res.status(500).json({
-            success: false,
-            error: error.message,
-            platform: 'Render',
-            connected: whatsappConnected,
-            recommendation: 'Use CallMeBot como alternativa'
-        });
-    }
-});
-
-// Rota para status CallMeBot
-app.get('/status-callmebot', (req, res) => {
-    res.json({
-        callmebot: {
-            configured: (CALLMEBOT_CONFIG.phone && CALLMEBOT_CONFIG.apiKey) ? '✅ Configurado' : '❌ Não configurado',
-            phone: CALLMEBOT_CONFIG.phone ? '✅ Definido' : '❌ Faltando CALLMEBOT_PHONE',
-            phoneValid: validatePhoneNumber(CALLMEBOT_CONFIG.phone) ? '✅ Válido' : '❌ Formato inválido',
-            apiKey: CALLMEBOT_CONFIG.apiKey ? '✅ Definido' : '❌ Faltando CALLMEBOT_APIKEY',
-            api: 'CallMeBot WhatsApp',
-            platform: 'Render',
-            cost: 'Gratuito',
-            limitations: 'Apenas para seu próprio número',
-            limits: {
-                dailyMessages: '100 mensagens por dia',
-                messageLength: '1000 caracteres',
-                retries: CALLMEBOT_CONFIG.maxRetries,
-                timeout: CALLMEBOT_CONFIG.timeout
-            }
-        }
-    });
-});
-
-// Rota de configuração para Render
-app.post('/setup-callmebot', (req, res) => {
-    res.json({
-        message: 'Como configurar CallMeBot WhatsApp no Render',
-        platform: 'Render',
-        steps: [
-            {
-                step: 1,
-                action: 'Adicionar contato',
-                details: 'Adicione +34 644 77 94 07 no WhatsApp',
-                contact: '+34 644 77 94 07'
-            },
-            {
-                step: 2,
-                action: 'Enviar mensagem',
-                details: 'Envie exatamente esta mensagem:',
-                message: 'I allow callmebot to send me messages'
-            },
-            {
-                step: 3,
-                action: 'Aguardar API key',
-                details: 'Você receberá uma API key por WhatsApp'
-            },
-            {
-                step: 4,
-                action: 'Configurar no Render',
-                details: 'Adicione as variáveis de ambiente no Dashboard do Render:',
-                env: {
-                    'CALLMEBOT_PHONE': 'Seu número com código do país (ex: 5581999999999)',
-                    'CALLMEBOT_APIKEY': 'A API key recebida'
-                }
-            },
-            {
-                step: 5,
-                action: 'Deploy no Render',
-                details: 'Faça o redeploy para aplicar as variáveis'
-            }
-        ],
-        renderConfig: {
-            dashboard: 'https://dashboard.render.com',
-            envVars: 'Settings > Environment Variables',
-            deploy: 'Manual Deploy ou Auto-deploy via Git'
-        },
-        currentConfig: {
-            phone: CALLMEBOT_CONFIG.phone ? '✅ Configurado' : '❌ Não configurado no Render',
-            apiKey: CALLMEBOT_CONFIG.apiKey ? '✅ Configurado' : '❌ Não configurado no Render',
-            valid: (CALLMEBOT_CONFIG.phone && CALLMEBOT_CONFIG.apiKey && validatePhoneNumber(CALLMEBOT_CONFIG.phone)) ? '✅ Pronto para usar no Render' : '❌ Configuração incompleta no Render'
-        }
-    });
-});
-
-// Rota para enviar alerta médico via CallMeBot (versão original)
-app.post('/send-alert-callmebot', async (req, res) => {
-    try {
-        const {
-            severity,
-            patientName,
-            cpf,
-            phone,
-            score,
-            symptoms,
-            observations
-        } = req.body;
-
-        // Validação básica
-        if (!severity || !score) {
-            return res.status(400).json({
-                success: false,
-                error: 'Campos obrigatórios: severity, score',
-                platform: 'Render'
-            });
-        }
-
-        const urgencyEmoji = {
-            'baixa': '🟡',
-            'media': '🟠',
-            'alta': '🔴',
-            'critica': '🆘',
-            'emergencia': '🚨'
-        }[severity?.toLowerCase()] || '⚠️';
-
-        const alertMessage = `${urgencyEmoji} *ALERTA MÉDICO*
-━━━━━━━━━━━━━━━━━
-🔴 *Severidade:* ${severity}
-👤 *Paciente:* ${patientName || 'Não informado'}
-📋 *CPF:* ${cpf || 'Não informado'}
-📞 *Contato:* ${phone || 'Não informado'}
-📊 *Score:* ${score}
-${symptoms ? `🩺 *Sintomas:* ${symptoms}` : ''}
-${observations ? `📝 *Observações:* ${observations}` : ''}
-⏰ *Data/Hora:* ${new Date().toLocaleString('pt-BR')}
-━━━━━━━━━━━━━━━━━
-
-_MedChat Render - CallMeBot API_`;
-
-        const result = await sendCallMeBotWhatsApp(alertMessage);
-        
-        if (result.success) {
-            res.json({
-                success: true,
-                message: 'Alerta médico enviado via CallMeBot no Render!',
-                api: 'CallMeBot',
-                platform: 'Render',
-                severity: severity,
-                patient: patientName,
-                score: score,
-                attempts: result.attempt,
-                timestamp: new Date().toISOString()
-            });
-        } else {
-            res.status(500).json({
-                success: false,
-                error: 'Falha no envio via CallMeBot',
-                platform: 'Render',
-                details: result.error,
-                attempts: result.totalAttempts
-            });
-        }
-        
-    } catch (error) {
-        res.status(500).json({
-            success: false,
-            error: error.message,
-            platform: 'Render'
+            error: error.message
         });
     }
 });
 
 // Rota principal - Enviar alerta (todos os canais)
 app.post('/send-alert', async (req, res) => {
-    console.log('Render - Recebido:', req.body);
-    const { severity, patientName, cpf, phone, score, symptoms, observations } = req.body;
-
-    // Mensagem formatada para WhatsApp
-    const whatsappMessage = `🚨 ALERTA MÉDICO
-━━━━━━━━━━━━━━━━━
-🔴 Severidade: ${severity}
-👤 Paciente: ${patientName || 'Não informado'}
-📋 CPF: ${cpf || 'Não informado'}
-📞 Contato: ${phone || 'Não informado'}
-📊 Score: ${score}
-⏰ ${new Date().toLocaleString('pt-BR')}
-━━━━━━━━━━━━━━━━━`;
-
-    // Mensagem formatada para Telegram (com HTML)
-    const telegramMessage = `🚨 <b>ALERTA MÉDICO - Render</b>
-━━━━━━━━━━━━━━━━━
-🔴 <b>Severidade:</b> ${severity}
-👤 <b>Paciente:</b> ${patientName || 'Não informado'}
-📋 <b>CPF:</b> ${cpf || 'Não informado'}
-📞 <b>Contato:</b> ${phone || 'Não informado'}
-📊 <b>Score:</b> ${score}
-⏰ <b>Data:</b> ${new Date().toLocaleString('pt-BR')}
-━━━━━━━━━━━━━━━━━`;
+    console.log('Recebido alerta:', req.body);
+    const alertData = req.body;
 
     const results = {
-        whatsapp: { success: false, error: null },
-        telegram: { success: false, error: null },
-        callmebot: { success: false, error: null }
+        pushbullet: { success: false, error: null },
+        telegram: { success: false, error: null }
     };
 
-    // Tentar enviar WhatsApp (apenas em desenvolvimento)
-    if (NODE_ENV !== 'production') {
+    // Tentar enviar via Pushbullet
+    try {
+        const pushResult = await sendMedicalAlertPushbullet(alertData);
+        if (pushResult.success) {
+            results.pushbullet.success = true;
+            console.log('✅ Pushbullet enviado com sucesso');
+        } else {
+            results.pushbullet.error = pushResult.error;
+        }
+    } catch (error) {
+        results.pushbullet.error = error.message;
+        console.log('❌ Erro no Pushbullet:', error.message);
+    }
+
+    // Tentar enviar via Telegram (se configurado)
+    if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
         try {
-            await sendWhatsAppToMe(whatsappMessage);
-            results.whatsapp.success = true;
-            console.log('✅ WhatsApp enviado com sucesso no Render');
+            const { title, body } = createMedicalAlert(alertData);
+            const telegramMessage = `🚨 <b>${title}</b>\n\n${body.replace(/\n/g, '\n')}`;
+            
+            await sendTelegramMessage(telegramMessage);
+            results.telegram.success = true;
+            console.log('✅ Telegram enviado com sucesso');
         } catch (error) {
-            results.whatsapp.error = error.message;
-            console.log('❌ Erro no WhatsApp (Render):', error.message);
+            results.telegram.error = error.message;
+            console.log('❌ Erro no Telegram:', error.message);
         }
     } else {
-        results.whatsapp.error = 'WhatsApp Baileys desabilitado em produção';
-    }
-
-    // Tentar enviar Telegram
-    try {
-        await sendTelegramMessage(telegramMessage);
-        results.telegram.success = true;
-        console.log('✅ Telegram enviado com sucesso no Render');
-    } catch (error) {
-        results.telegram.error = error.message;
-        console.log('❌ Erro no Telegram (Render):', error.message);
-    }
-
-    // Tentar enviar CallMeBot como backup principal
-    try {
-        const callmebotResult = await sendMedicalAlertCallMeBot(req.body);
-        if (callmebotResult.success) {
-            results.callmebot.success = true;
-            console.log('✅ CallMeBot enviado com sucesso no Render');
-        } else {
-            results.callmebot.error = callmebotResult.error;
-        }
-    } catch (error) {
-        results.callmebot.error = error.message;
-        console.log('❌ Erro no CallMeBot (Render):', error.message);
+        results.telegram.error = 'Telegram não configurado';
     }
 
     // Resposta baseada no sucesso
-    const anySuccess = results.whatsapp.success || results.telegram.success || results.callmebot.success;
+    const anySuccess = results.pushbullet.success || results.telegram.success;
 
     if (anySuccess) {
         res.status(200).json({
             success: true,
-            message: 'Alerta enviado no Render!',
-            platform: 'Render',
+            message: 'Alerta enviado!',
+            platform: 'Pushbullet + Telegram',
             details: results
         });
     } else {
         res.status(500).json({
             success: false,
-            message: 'Falha ao enviar alertas no Render',
-            platform: 'Render',
+            message: 'Falha ao enviar alertas',
             details: results
         });
     }
 });
 
-// ================== INICIALIZAÇÃO RENDER ==================
+// Rota para webhook Zapier/Make
+app.post('/webhook-alert', async (req, res) => {
+    try {
+        console.log('📧 Webhook recebido (Zapier/Make):', req.body);
+        
+        // Processar dados do webhook
+        const alertData = {
+            severity: req.body.severity || req.body.urgencia || 'media',
+            patientName: req.body.patientName || req.body.paciente || req.body.nome,
+            score: req.body.score || req.body.pontuacao,
+            symptoms: req.body.symptoms || req.body.sintomas,
+            observations: req.body.observations || req.body.observacoes,
+            location: req.body.location || req.body.local
+        };
+
+        // Enviar via Pushbullet
+        const result = await sendMedicalAlertPushbullet(alertData);
+        
+        res.json({
+            success: result.success,
+            message: result.success ? 'Alerta processado via webhook!' : 'Erro no webhook',
+            webhook: 'Zapier/Make',
+            data: alertData,
+            result: result
+        });
+        
+    } catch (error) {
+        console.error('❌ Erro no webhook:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message,
+            webhook: 'Zapier/Make'
+        });
+    }
+});
+
+// ================== INICIALIZAÇÃO ==================
 
 const PORT = process.env.PORT || 3000;
 
-// Keep-alive para evitar que o Render durma o serviço
-if (NODE_ENV === 'production') {
-    setInterval(keepAlive, 14 * 60 * 1000); // 14 minutos
-}
-
-app.listen(PORT, async () => {
-    console.log(`🚀 Servidor MedChat rodando no Render na porta ${PORT}`);
+app.listen(PORT, () => {
+    console.log(`🚀 Servidor MedChat rodando na porta ${PORT}`);
     console.log(`☁️ Ambiente: ${NODE_ENV}`);
     console.log(`📱 URL: ${process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`}`);
-    console.log('📱 CallMeBot WhatsApp configurado para Render!');
-    console.log('🆓 API Gratuita recomendada para Render!');
+    console.log('📱 Pushbullet configurado para notificações médicas!');
+    console.log('🆓 Solução gratuita e muito mais confiável!');
     
-    // Verificar configuração CallMeBot
-    if (CALLMEBOT_CONFIG.phone && CALLMEBOT_CONFIG.apiKey) {
-        console.log('✅ CallMeBot configurado no Render!');
-        if (validatePhoneNumber(CALLMEBOT_CONFIG.phone)) {
-            console.log('✅ Número de telefone válido!');
-        } else {
-            console.log('⚠️ Número de telefone inválido! Use formato: 5581999999999');
-        }
+    // Verificar configuração Pushbullet
+    if (PUSHBULLET_TOKEN) {
+        console.log('✅ Pushbullet configurado!');
+        console.log('💡 100 notificações gratuitas por mês');
+        console.log('📱 Funciona em Android, iOS e Desktop');
     } else {
-        console.log('⚠️ CallMeBot não configurado! Configure as variáveis no Render Dashboard');
+        console.log('⚠️ Pushbullet não configurado! Configure PUSHBULLET_TOKEN');
     }
 
-    console.log('\n🎉 MedChat pronto no Render!');
+    console.log('\n🎉 MedChat com Pushbullet pronto!');
 });
 
-// Graceful shutdown para Render
+// Graceful shutdown
 process.on('SIGINT', () => {
-    console.log('\n🛑 Desligando servidor no Render...');
-    if (sock) {
-        sock.end();
-    }
+    console.log('\n🛑 Desligando servidor...');
     process.exit(0);
 });
 
 process.on('SIGTERM', () => {
-    console.log('\n🛑 SIGTERM recebido no Render...');
-    if (sock) {
-        sock.end();
-    }
+    console.log('\n🛑 SIGTERM recebido...');
     process.exit(0);
 });
