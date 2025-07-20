@@ -88,7 +88,7 @@ async function sendPushbulletNotification(title, body, url = null, retryCount = 
         if (retryCount < PUSHBULLET_CONFIG.maxRetries - 1) {
             const delay = Math.pow(2, retryCount) * 1000;
             console.log(`🔄 Tentando novamente em ${delay}ms...`);
-            
+
             await new Promise(resolve => setTimeout(resolve, delay));
             return sendPushbulletNotification(title, body, url, retryCount + 1);
         }
@@ -151,6 +151,12 @@ function createMedicalAlert(alertData) {
     // Título para Pushbullet
     const title = `${config.emoji} ALERTA MÉDICO - ${severity?.toUpperCase()}`;
 
+    // --- MUDANÇA AQUI: Para Horário de Brasília ---
+    const now = new Date();
+    const brasiliaDate = now.toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+    const brasiliaTime = now.toLocaleTimeString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+    // --- FIM DA MUDANÇA ---
+
     // Corpo da mensagem
     let body = `Severidade: ${severity?.toUpperCase()}\n`;
     if (patientName) body += `Paciente: ${patientName}\n`;
@@ -158,7 +164,7 @@ function createMedicalAlert(alertData) {
     if (location) body += `Local: ${location}\n`;
     if (phone) body += `Contato: ${phone}\n`;
     if (symptoms) body += `Sintomas: ${symptoms}\n`;
-    body += `Data/Hora: ${new Date().toLocaleString('pt-BR')}`;
+    body += `Data/Hora: ${brasiliaDate} ${brasiliaTime}`; // Usa a data e hora de Brasília
 
     return { title, body, priority: config.priority };
 }
@@ -166,10 +172,10 @@ function createMedicalAlert(alertData) {
 // Função para enviar via Pushbullet formatado
 async function sendMedicalAlertPushbullet(alertData) {
     const { title, body } = createMedicalAlert(alertData);
-    
+
     // URL opcional para dashboard médico
     const dashboardUrl = process.env.DASHBOARD_URL || null;
-    
+
     return await sendPushbulletNotification(title, body, dashboardUrl);
 }
 
@@ -256,15 +262,15 @@ app.get('/status-pushbullet', (req, res) => {
 app.post('/test-pushbullet', async (req, res) => {
     try {
         const title = '🧪 Teste MedChat - Pushbullet';
-        const body = `Data/Hora: ${new Date().toLocaleString('pt-BR')}
+        const body = `Data/Hora: ${new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })}
 Sistema: MedChat v2.2
 Plataforma: Render + Pushbullet
 Status: Funcionando perfeitamente!
 
-Este é um teste do sistema de notificações médicas.`;
+Este é um teste do sistema de notificações médicas.`; // MUDANÇA AQUI TAMBÉM
 
         const result = await sendPushbulletNotification(title, body);
-        
+
         if (result.success) {
             res.json({
                 success: true,
@@ -283,7 +289,7 @@ Este é um teste do sistema de notificações médicas.`;
                 tip: 'Verifique se PUSHBULLET_TOKEN está correto no Render'
             });
         }
-        
+
     } catch (error) {
         res.status(500).json({
             success: false,
@@ -294,8 +300,9 @@ Este é um teste do sistema de notificações médicas.`;
 
 // Rota para testar Telegram
 app.post('/test-telegram', async (req, res) => {
+    // MUDANÇA AQUI TAMBÉM: Para Horário de Brasília
     const testMessage = `🧪 <b>Teste MedChat - Telegram</b>
-⏰ <b>Data:</b> ${new Date().toLocaleString('pt-BR')}
+⏰ <b>Data:</b> ${new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })}
 🏥 <b>Sistema:</b> MedChat v2.2
 📱 <b>Plataforma:</b> Render + Pushbullet
 ✅ <b>Status:</b> Sistema funcionando!`;
@@ -323,7 +330,7 @@ app.post('/send-alert-pushbullet', async (req, res) => {
         // Validações obrigatórias
         const required = ['severity', 'score'];
         const missing = required.filter(field => !alertData[field]);
-        
+
         if (missing.length > 0) {
             return res.status(400).json({
                 success: false,
@@ -344,7 +351,7 @@ app.post('/send-alert-pushbullet', async (req, res) => {
 
         console.log('📋 Processando alerta médico via Pushbullet...');
         const result = await sendMedicalAlertPushbullet(alertData);
-        
+
         if (result.success) {
             res.json({
                 success: true,
@@ -369,7 +376,7 @@ app.post('/send-alert-pushbullet', async (req, res) => {
                 }
             });
         }
-        
+
     } catch (error) {
         console.error('❌ Erro na rota de alerta Pushbullet:', error);
         res.status(500).json({
@@ -408,7 +415,7 @@ app.post('/send-alert', async (req, res) => {
         try {
             const { title, body } = createMedicalAlert(alertData);
             const telegramMessage = `🚨 <b>${title}</b>\n\n${body.replace(/\n/g, '\n')}`;
-            
+
             await sendTelegramMessage(telegramMessage);
             results.telegram.success = true;
             console.log('✅ Telegram enviado com sucesso');
@@ -443,7 +450,7 @@ app.post('/send-alert', async (req, res) => {
 app.post('/webhook-alert', async (req, res) => {
     try {
         console.log('📧 Webhook recebido (Zapier/Make):', req.body);
-        
+
         // Processar dados do webhook
         const alertData = {
             severity: req.body.severity || req.body.urgencia || 'media',
@@ -456,7 +463,7 @@ app.post('/webhook-alert', async (req, res) => {
 
         // Enviar via Pushbullet
         const result = await sendMedicalAlertPushbullet(alertData);
-        
+
         res.json({
             success: result.success,
             message: result.success ? 'Alerta processado via webhook!' : 'Erro no webhook',
@@ -464,7 +471,7 @@ app.post('/webhook-alert', async (req, res) => {
             data: alertData,
             result: result
         });
-        
+
     } catch (error) {
         console.error('❌ Erro no webhook:', error);
         res.status(500).json({
@@ -485,7 +492,7 @@ app.listen(PORT, () => {
     console.log(`📱 URL: ${process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`}`);
     console.log('📱 Pushbullet configurado para notificações médicas!');
     console.log('🆓 Solução gratuita e muito mais confiável!');
-    
+
     // Verificar configuração Pushbullet
     if (PUSHBULLET_TOKEN) {
         console.log('✅ Pushbullet configurado!');
